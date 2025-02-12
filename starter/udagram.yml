@@ -32,8 +32,6 @@ Parameters:
     Default: 10.0.3.0/24
 
 Resources:
-  # S3 Bucket for statis content
-
   VPC: 
     Type: AWS::EC2::VPC
     Properties:
@@ -43,12 +41,60 @@ Resources:
         - Key: Name 
           Value: !Ref EnvironmentName
 
+  ### S3 Bucket for Static Content
+  StaticContentBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      AccessControl: PublicRead
+      BucketName: !Sub "${EnvironmentName}-static-content-${AWS::AccountId}-${AWS::Region}"
+    DeletionPolicy: Delete
 
+  StaticContentBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref StaticContentBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: PublicReadGetObject
+            Effect: Allow
+            Principal: "*"
+            Action: s3:GetObject
+            Resource: !Sub "${StaticContentBucket.Arn}/*"
 
+  ####Security Groups
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow inbound HTTP on port 80 for the ALB
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-ALBSG"
 
-    #Security Groups
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow inbound HTTP on port 80 from the ALB and all outbound traffic
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-InstanceSG"
 
-  
+  ###Launch Template for wenb instances
   WebAppLaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
     Properties: 
