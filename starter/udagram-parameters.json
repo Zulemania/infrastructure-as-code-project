@@ -5,7 +5,7 @@
     },
 	{
 		"ParameterKey": "ServerAMIId",
-		"ParameterValue": "/aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2"
+		"ParameterValue": "ami-0092e03b71b95bc25"
 	  },
 	  {
 		"ParameterKey": "InstanceType",

@@ -2,17 +2,28 @@ Description: Application Stack for Udagram
 
 Parameters:
   # Add your parameters here
-  Parameters:
   EnvironmentName:
     Description: This name will be prefixed to all the resources.
     Type: String
+  
   ServerAMIId:
     Description: AMI ID for EC2 instances (paste the latest Ubuntu 22.04 AMI here or use SSM parameter lookup).
     Type: String
+  
   InstanceType:
     Description: EC2 instance type.
     Type: String
     Default: t3.small
+
+  VpcCIDR:
+    Description: CIDR block for the VPC.
+    Type: String
+    Default: 10.0.0.0/16
+  
+  AsgDesiredCapacity:
+    Type: String
+    Description: Desired capacity for the fleet of instances
+    Default: 1
 
 Resources:
   VPC: 
@@ -24,59 +35,73 @@ Resources:
         - Key: Name 
           Value: !Ref EnvironmentName
 
-  ### S3 Bucket for Static Content
-  StaticContentBucket:
-    Type: AWS::S3::Bucket
+  # Public Subnet for the application
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
     Properties:
-      AccessControl: PublicRead
-      BucketName: !Sub "${EnvironmentName}-static-content-${AWS::AccountId}-${AWS::Region}"
-    DeletionPolicy: Delete
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.1.0/24
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-public-subnet"
 
-  StaticContentBucketPolicy:
-    Type: AWS::S3::BucketPolicy
+    # Internet Gateway for public connectivity
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
     Properties:
-      Bucket: !Ref StaticContentBucket
-      PolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Sid: PublicReadGetObject
-            Effect: Allow
-            Principal: "*"
-            Action: s3:GetObject
-            Resource: !Sub "${StaticContentBucket.Arn}/*"
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-igw"
 
-  ### Security Groups
-  LoadBalancerSecurityGroup:
+  # Attach the Internet Gateway to the VPC
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  # Route Table for the Public Subnet
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-public-rt"
+
+  # Route that sends all outbound traffic to the Internet Gateway
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: "0.0.0.0/0"
+      GatewayId: !Ref InternetGateway
+
+  # Associate the Public Subnet with the Public Route Table
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  # Security Group for the Application Instance
+  InstanceSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Allow inbound HTTP on port 80 for the ALB
+      GroupDescription: Enable SSH and HTTP access
       VpcId: !Ref VPC
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 80
           ToPort: 80
           CidrIp: 0.0.0.0/0
-      SecurityGroupEgress:
-        - IpProtocol: tcp
-          FromPort: 80
-          ToPort: 80
-          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-instance-sg"
 
-  WebAppSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: "Allow inbound HTTP traffic from the ALB and all outbound traffic for the web app"
-      VpcId: !Ref VPC
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 80
-          ToPort: 80
-          SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
-      SecurityGroupEgress:
-        - IpProtocol: -1
-          CidrIp: 0.0.0.0/0
-
-  ### Launch Template for web instances
   LaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
     Properties: 
@@ -95,73 +120,196 @@ Resources:
             Ebs:
               VolumeSize: 10
 
-  ### Auto Scaling Group
+  # EC2 Instance running the Udagram application
+  ApplicationInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref ServerAMIId
+      SubnetId: !Ref PublicSubnet
+      SecurityGroupIds:
+        - !Ref InstanceSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-app-instance"
+
+  # AutoScaling group
+
   AutoScalingGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
     Properties:
       VPCZoneIdentifier:
       - Fn::ImportValue: 
-          !Sub "${EnvironmentName}-private-subnets"
+          !Sub "${EnvironmentName}-PRIV-NETS"
       LaunchTemplate:
         LaunchTemplateId: !Ref LaunchTemplate
+        Version: !GetAtt LaunchTemplate.LatestVersionNumber
       MinSize: '1'
+      DesiredCapacity: !Ref AsgDesiredCapacity
       MaxSize: '6'
+  
+   
 
-  ### Load Balancer
-  LoadBalancer:
-    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
-    Properties:
-      Subnets:
-      - Fn::ImportValue: !Sub "${EnvironmentName}-public-subnet1"
-      - Fn::ImportValue: !Sub "${EnvironmentName}-public-subnet2"
-      SecurityGroups:
-      - Ref: LoadBalancerSecurityGroup
 
-  ### Load Balancer Listener
-  Listener:
-    Type: AWS::ElasticLoadBalancingV2::Listener
-    Properties:
-      DefaultActions:
-      - Type: forward
-        TargetGroupArn:
-          Ref: TargetGroup
-      LoadBalancerArn:
-        Ref: LoadBalancer
-      Port: '80'
-      Protocol: HTTP
+  
+  
 
-  ### Listener Rule
-  ListenerRule:
-      Type: AWS::ElasticLoadBalancingV2::ListenerRule
-      Properties:
-        Actions:
-        - Type: forward
-          TargetGroupArn: !Ref 'TargetGroup'
-        Conditions:
-        - Field: path-pattern
-          Values: [/]
-        ListenerArn: !Ref 'Listener'
-        Priority: 1
+  ### S3 Bucket for Static Content
+  # S3Bucket:
+  #  Type: AWS::S3::Bucket
+  #  Properties:
+  #   BucketName: !Sub "${EnvironmentName}-bucket"
 
-  ### Target group
-  TargetGroup:
-    Type: AWS::ElasticLoadBalancingV2::TargetGroup
-    Properties:
-      HealthCheckIntervalSeconds: 10
-      HealthCheckPath: /
-      HealthCheckProtocol: HTTP
-      HealthCheckTimeoutSeconds: 8
-      HealthyThresholdCount: 2
-      Port: 80
-      Protocol: HTTP
-      UnhealthyThresholdCount: 5
-      VpcId: 
-        Fn::ImportValue:
-          Fn::Sub: "${EnvironmentName}-VPCID"
+  # IAMRole:
+  #  Type: AWS::IAM::Role
+  #  Properties:
+  #   RoleName: !Ref EnvironmentName
+  #   AssumeRolePolicyDocument:
+  #     Version: '2012-10-17'
+  #     Statement:
+  #       - Effect: 'Allow'
+  #         Principal:
+  #           Service:
+  #             - 'ec2.amazonaws.com'
+  #         Action:
+  #           - 'sts:AssumeRole'
+  
+  #   Policies:
+  #    - PolicyName: s3
+  #      PolicyDocument:
+  #       Version: '2012-10-17'
+  #       Statement:
+  #        - Effect: Allow
+  #          Action:
+  #           - 's3:PutObject'
+  #           - 's3:GetObject'
+  #          Resource: !Sub "${S3Bucket.Arn}/*"
+
+  # InstanceProfile:
+  #  Type: AWS::IAM::InstanceProfile
+  #  Properties:
+  #   Path: '/'
+  #   Roles:
+  #    - !Ref IAMRole
+
+ 
+
+  # ### Security Groups
+  # LoadBalancerSecurityGroup:
+  #   Type: AWS::EC2::SecurityGroup
+  #   Properties:
+  #     GroupDescription: Allow inbound HTTP on port 80 for the ALB
+  #     VpcId: !Ref VPC
+  #     SecurityGroupIngress:
+  #       - IpProtocol: tcp
+  #         FromPort: 80
+  #         ToPort: 80
+  #         CidrIp: 0.0.0.0/0
+  #     SecurityGroupEgress:
+  #       - IpProtocol: tcp
+  #         FromPort: 80
+  #         ToPort: 80
+  #         CidrIp: 0.0.0.0/0
+
+  # WebAppSecurityGroup:
+  #   Type: AWS::EC2::SecurityGroup
+  #   Properties:
+  #     GroupDescription: "Allow inbound HTTP traffic from the ALB and all outbound traffic for the web app"
+  #     VpcId: !Ref VPC
+  #     SecurityGroupIngress:
+  #       - IpProtocol: tcp
+  #         FromPort: 80
+  #         ToPort: 80
+  #         SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
+  #     SecurityGroupEgress:
+  #       - IpProtocol: -1
+  #         CidrIp: 0.0.0.0/0
+
+  # ### Launch Template for web instances
+  # LaunchTemplate:
+  #   Type: AWS::EC2::LaunchTemplate
+  #   Properties: 
+  #     LaunchTemplateData:
+  #       UserData:
+  #         Fn::Base64: |
+  #           #!/bin/bash
+  #           apt-get update -y
+  #           sudo apt-get install nginx -y
+  #           echo "it works! Udagram, Udacity" > /var/www/html/index.html
+  #           service nginx start
+  #       ImageId: !Ref ServerAMIId
+  #       InstanceType: !Ref InstanceType
+  #       BlockDeviceMappings:
+  #         - DeviceName: "/dev/sdk"
+  #           Ebs:
+  #             VolumeSize: 10
+
+  # ### Auto Scaling Group
+  # AutoScalingGroup:
+  #   Type: AWS::AutoScaling::AutoScalingGroup
+  #   Properties:
+  #     VPCZoneIdentifier:
+  #     - Fn::ImportValue: 
+  #         !Sub "${EnvironmentName}-PRIV-NETS"
+  #     LaunchTemplate:
+  #       LaunchTemplateId: !Ref LaunchTemplate
+  #       Version: !GetAtt LaunchTemplate.LatestVersionNumber
+  #     MinSize: '1'
+  #     MaxSize: '6'
+
+  # ### Load Balancer
+  # LoadBalancer:
+  #   Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+  #   Properties:
+  #     Subnets:
+  #     - Fn::ImportValue: !Sub "${EnvironmentName}-PUB1-SN"
+  #     - Fn::ImportValue: !Sub "${EnvironmentName}-PUB2-SN"
+  #     SecurityGroups:
+  #     - Ref: LoadBalancerSecurityGroup
+
+  # ### Load Balancer Listener
+  # Listener:
+  #   Type: AWS::ElasticLoadBalancingV2::Listener
+  #   Properties:
+  #     DefaultActions:
+  #     - Type: forward
+  #       TargetGroupArn:
+  #         Ref: TargetGroup
+  #     LoadBalancerArn:
+  #       Ref: LoadBalancer
+  #     Port: '80'
+  #     Protocol: HTTP
+
+  # ### Listener Rule
+  # ListenerRule:
+  #     Type: AWS::ElasticLoadBalancingV2::ListenerRule
+  #     Properties:
+  #       Actions:
+  #       - Type: forward
+  #         TargetGroupArn: !Ref 'TargetGroup'
+  #       Conditions:
+  #       - Field: path-pattern
+  #         Values: [/]
+  #       ListenerArn: !Ref 'Listener'
+  #       Priority: 1
+
+  # ### Target group
+  # TargetGroup:
+  #   Type: AWS::ElasticLoadBalancingV2::TargetGroup
+  #   Properties:
+  #     HealthCheckIntervalSeconds: 10
+  #     HealthCheckPath: /
+  #     HealthCheckProtocol: HTTP
+  #     HealthCheckTimeoutSeconds: 8
+  #     HealthyThresholdCount: 2
+  #     Port: 80
+  #     Protocol: HTTP
+  #     UnhealthyThresholdCount: 5
+  #     VpcId: 
+  #       Fn::ImportValue:
+  #         Fn::Sub: "${EnvironmentName}-VPCID"
 
   ### Outputs
-  Outputs:
-  LoadBalancerURL:
-    Description: Public URL for Load Balancer
-    Value: !Join [ "", [ "http://", !GetAtt LoadBalancer.DNSName ] ]
+
+
   
