@@ -1,11 +1,54 @@
-Description: CD12352 - Infrastructure as Code Project - Udagram
+Description: Application Stack for Udagram
 
 Parameters:
   # Add your parameters here
+  EnvironmentName:
+    Description: An environment name that will be prefixed to resource names
+    Type: String
+
+  VpcCIDR: 
+    Description: CIDR for Udagram App VPC
+    Type: String
+    Default: 10.0.0.0/16
+
+  PublicSubnet1CIDR:
+    Description: CIDR for Udagram App public Subnet 1
+    Type: String
+    Default: 10.0.0.0/24
+
+  PublicSubnet2CIDR:
+    Description: CIDR for Udagram App public Subnet 2
+    Type: String
+    Default: 10.0.1.0/24
+
+  PrivateSubnet1CIDR:
+    Description: CIDR for Udagram App private Subnet 1
+    Type: String
+    Default: 10.0.2.0/24
+
+  PrivateSubnet2CIDR:
+    Description: CIDR for Udagram App private Subnet 2
+    Type: String
+    Default: 10.0.3.0/24
 
 Resources:
-  # Add your resources here
-  # We include a portion of the LaunchTemplate resource so you can use the UserData.
+  # S3 Bucket for statis content
+
+  VPC: 
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCIDR
+      EnableDnsHostnames: true
+      Tags: 
+        - Key: Name 
+          Value: !Ref EnvironmentName
+
+
+
+
+    #Security Groups
+
+  
   WebAppLaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
     Properties: 
@@ -15,4 +58,5 @@ Resources:
             #!/bin/bash
             apt-get update -y
             sudo apt-get install nginx -y
+            echo "it works! Udagram, Udacity" > /var/www/html/index.html
             service nginx start
