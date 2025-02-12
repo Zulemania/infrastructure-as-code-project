@@ -2,34 +2,17 @@ Description: Application Stack for Udagram
 
 Parameters:
   # Add your parameters here
+  Parameters:
   EnvironmentName:
-    Description: An environment name that will be prefixed to resource names
+    Description: This name will be prefixed to all the resources.
     Type: String
-
-  VpcCIDR: 
-    Description: CIDR for Udagram App VPC
+  ServerAMIId:
+    Description: AMI ID for EC2 instances (paste the latest Ubuntu 22.04 AMI here or use SSM parameter lookup).
     Type: String
-    Default: 10.0.0.0/16
-
-  PublicSubnet1CIDR:
-    Description: CIDR for Udagram App public Subnet 1
+  InstanceType:
+    Description: EC2 instance type.
     Type: String
-    Default: 10.0.0.0/24
-
-  PublicSubnet2CIDR:
-    Description: CIDR for Udagram App public Subnet 2
-    Type: String
-    Default: 10.0.1.0/24
-
-  PrivateSubnet1CIDR:
-    Description: CIDR for Udagram App private Subnet 1
-    Type: String
-    Default: 10.0.2.0/24
-
-  PrivateSubnet2CIDR:
-    Description: CIDR for Udagram App private Subnet 2
-    Type: String
-    Default: 10.0.3.0/24
+    Default: t3.small
 
 Resources:
   VPC: 
@@ -80,20 +63,21 @@ Resources:
           CidrIp: 0.0.0.0/0
 
   WebAppSecurityGroup:
-  Type: AWS::EC2::SecurityGroup
-  Properties:
-    GroupDescription: "Allow inbound HTTP traffic from the ALB and all outbound traffic for the web app"
-    VpcId: !Ref VPC
-    SecurityGroupIngress:
-      - IpProtocol: tcp
-        FromPort: 80
-        ToPort: 80
-        SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
-    SecurityGroupEgress:
-      - IpProtocol: -1
-        CidrIp: 0.0.0.0/0
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Allow inbound HTTP traffic from the ALB and all outbound traffic for the web app"
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+
   ### Launch Template for web instances
-  WebAppLaunchTemplate:
+  LaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
     Properties: 
       LaunchTemplateData:
@@ -104,6 +88,24 @@ Resources:
             sudo apt-get install nginx -y
             echo "it works! Udagram, Udacity" > /var/www/html/index.html
             service nginx start
+        ImageId: !Ref ServerAMIId
+        InstanceType: !Ref InstanceType
+        BlockDeviceMappings:
+          - DeviceName: "/dev/sdk"
+            Ebs:
+              VolumeSize: 10
+
+  ### Auto Scaling Group
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier:
+      - Fn::ImportValue: 
+          !Sub "${EnvironmentName}-private-subnets"
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LaunchTemplate
+      MinSize: '1'
+      MaxSize: '6'
 
   ### Load Balancer
   LoadBalancer:
@@ -155,4 +157,11 @@ Resources:
       UnhealthyThresholdCount: 5
       VpcId: 
         Fn::ImportValue:
-          Fn::Sub: "${EnvironmentName}-vpc-id"
+          Fn::Sub: "${EnvironmentName}-VPCID"
+
+  ### Outputs
+  Outputs:
+  LoadBalancerURL:
+    Description: Public URL for Load Balancer
+    Value: !Join [ "", [ "http://", !GetAtt LoadBalancer.DNSName ] ]
+  
